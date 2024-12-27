@@ -127,10 +127,14 @@ static inline void print_intr(uint32_t intr) {
 // PROTOTYPE
 //--------------------------------------------------------------------+
 
+#if CFG_TUSB_OS != OPT_OS_ZEPHYR
+
 // weak dcache for non-cacheable MCU
 TU_ATTR_WEAK bool hcd_dcache_clean(void const* addr, uint32_t data_size) { (void) addr; (void) data_size; return true; }
 TU_ATTR_WEAK bool hcd_dcache_invalidate(void const* addr, uint32_t data_size) { (void) addr; (void) data_size; return true; }
 TU_ATTR_WEAK bool hcd_dcache_clean_invalidate(void const* addr, uint32_t data_size) { (void) addr; (void) data_size; return true; }
+
+#endif // CFG_TUSB_OS != OPT_OS_ZEPHYR
 
 TU_ATTR_ALWAYS_INLINE static inline ehci_qhd_t* qhd_control(uint8_t dev_addr);
 TU_ATTR_ALWAYS_INLINE static inline ehci_qhd_t* qhd_next (ehci_qhd_t const * p_qhd);

@@ -65,6 +65,8 @@ typedef void (*osal_task_func_t)( void * );
   #include "osal_rtx4.h"
 #elif CFG_TUSB_OS == OPT_OS_CUSTOM
   #include "tusb_os_custom.h" // implemented by application
+#elif CFG_TUSB_OS == OPT_OS_ZEPHYR
+  #include "osal_zephyr.h" 
 #else
   #error OS is not supported yet
 #endif

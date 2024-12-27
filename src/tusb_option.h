@@ -191,6 +191,7 @@
 #define OPT_OS_PICO       5  ///< Raspberry Pi Pico SDK
 #define OPT_OS_RTTHREAD   6  ///< RT-Thread
 #define OPT_OS_RTX4       7  ///< Keil RTX 4
+#define OPT_OS_ZEPHYR     8  ///< Zephyr OS
 
 // Allow to use command line to change the config name/location
 #ifdef CFG_TUSB_CONFIG_FILE
