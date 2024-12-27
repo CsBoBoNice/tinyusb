@@ -1,0 +1,22 @@
+config TINYUSB_MODULES
+	bool "tinyusb modules support"
+    default n
+	help
+	  support tinyusb.
+
+choice TINYUSB_CHIP_SELECT
+    prompt "Select USB chip type"
+    depends on TINYUSB_MODULES
+    default TINYUSB_CHIP_1060
+
+config TINYUSB_CHIP_1060
+    bool "Use 1060 chip"
+    help
+      Select if using the 1060 chip for USB functionality.
+
+config TINYUSB_CHIP_1170
+    bool "Use 1170 chip"
+    help
+      Select if using the 1170 chip for USB functionality.
+
+endchoice
