@@ -10,27 +10,41 @@ It is relatively simple to incorporate tinyusb to your project
 * Copy or ``git submodule`` this repo into your project in a subfolder. Let's say it is *your_project/tinyusb*
 * Add all the .c in the ``tinyusb/src`` folder to your project
 * Add *your_project/tinyusb/src* to your include path. Also make sure your current include path also contains the configuration file tusb_config.h.
-* Make sure all required macros are all defined properly in tusb_config.h (configure file in demo application is sufficient, but you need to add a few more such as CFG_TUSB_MCU, CFG_TUSB_OS since they are passed by IDE/compiler to maintain a unique configure for all boards).
+* Make sure all required macros are all defined properly in tusb_config.h (configure file in demo application is sufficient, but you need to add a few more such as ``CFG_TUSB_MCU``, ``CFG_TUSB_OS`` since they are passed by IDE/compiler to maintain a unique configure for all boards).
 * If you use the device stack, make sure you have created/modified usb descriptors for your own need. Ultimately you need to implement all **tud descriptor** callbacks for the stack to work.
-* Add tusb_init() call to your reset initialization code.
-* Call ``tud_int_handler()`` (device) and/or ``tuh_int_handler()`` (host) in your USB IRQ Handler
+* Add tusb_init(rhport, role) call to your reset initialization code.
+* Call ``tusb_int_handler(rhport, in_isr)`` in your USB IRQ Handler
 * Implement all enabled classes's callbacks.
 * If you don't use any RTOSes at all, you need to continuously and/or periodically call tud_task()/tuh_task() function. All of the callbacks and functionality are handled and invoked within the call of that task runner.
 
 .. code-block::
 
-   int main(void)
-   {
-     your_init_code();
-     tusb_init(); // initialize tinyusb stack
+   int main(void) {
+     tusb_rhport_init_t dev_init = {
+        .role = TUSB_ROLE_DEVICE,
+        .speed = TUSB_SPEED_AUTO
+     };
+     tusb_init(0, &dev_init); // initialize device stack on roothub port 0
 
-     while(1) // the mainloop
-     {
+     tusb_rhport_init_t host_init = {
+        .role = TUSB_ROLE_HOST,
+        .speed = TUSB_SPEED_AUTO
+     };
+     tusb_init(1, &host_init); // initialize host stack on roothub port 1
+
+     while(1) { // the mainloop
        your_application_code();
-
        tud_task(); // device task
        tuh_task(); // host task
      }
+   }
+
+   void USB0_IRQHandler(void) {
+     tusb_int_handler(0, true);
+   }
+
+   void USB1_IRQHandler(void) {
+     tusb_int_handler(1, true);
    }
 
 Examples
@@ -178,7 +192,10 @@ Some board use uf2 bootloader for drag & drop in to mass storage device, uf2 can
    $ make BOARD=feather_nrf52840_express all uf2
 
 IAR Support
-^^^^^^^^^^^
+-----------
+
+Use project connection
+^^^^^^^^^^^^^^^^^^^^^^
 
 IAR Project Connection files are provided to import TinyUSB stack into your project.
 
@@ -191,19 +208,19 @@ IAR Project Connection files are provided to import TinyUSB stack into your proj
 
     - `STM32L0xx_HAL_Driver` is only needed to run examples, TinyUSB stack itself doesn't rely on MCU's SDKs.
 
-* Open `Tools -> Configure Custom Argument Variables` (Switch to `Global` tab if you want to do it for all your projects)
+* Open ``Tools -> Configure Custom Argument Variables`` (Switch to `Global` tab if you want to do it for all your projects)
    Click `New Group ...`, name it to `TUSB`, Click `Add Variable ...`, name it to `TUSB_DIR`, change it's value to the path of your TinyUSB stack,
    for example `C:\\tinyusb`
 
 Import stack only
 ~~~~~~~~~~~~~~~~~
 
-1. Open `Project -> Add project Connection ...`, click `OK`, choose `tinyusb\\tools\\iar_template.ipcf`.
+1. Open ``Project -> Add project Connection ...``, click `OK`, choose `tinyusb\\tools\\iar_template.ipcf`.
 
 Run examples
 ~~~~~~~~~~~~
 
-1. (Python3 is needed) Run `iar_gen.py` to generate .ipcf files of examples:
+1. (Python3 is needed) Run ``iar_gen.py`` to generate .ipcf files of examples:
 
    .. code-block::
 
@@ -212,3 +229,15 @@ Run examples
 
 2. Open `Project -> Add project Connection ...`, click `OK`, choose `tinyusb\\examples\\(.ipcf of example)`.
    For example `C:\\tinyusb\\examples\\device\\cdc_msc\\iar_cdc_msc.ipcf`
+
+Native CMake support (9.50.1+)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With 9.50.1 release, IAR added experimental native CMake support (strangely not mentioned in public release note). Now it's possible to import CMakeLists.txt then build and debug as a normal project.
+
+Following these steps:
+
+1. Add IAR compiler binary path to system ``PATH`` environment variable, such as ``C:\Program Files\IAR Systems\Embedded Workbench 9.2\arm\bin``.
+2. Create new project in IAR, in Tool chain dropdown menu, choose CMake for Arm then Import ``CMakeLists.txt`` from chosen example directory.
+3. Set up board option in ``Option - CMake/CMSIS-TOOLBOX - CMake``, for example :code:`-DBOARD=stm32f439nucleo -DTOOLCHAIN=iar`, **Uncheck 'Override tools in env'**.
+4. (For debug only) Choose correct CPU model in ``Option - General Options - Target``, to profit register and memory view.

@@ -28,26 +28,16 @@
 #include "board.h"
 
 #include "esp_rom_gpio.h"
+#include "esp_mac.h"
 #include "hal/gpio_ll.h"
-#include "hal/usb_hal.h"
-#include "soc/usb_periph.h"
 
-#include "driver/rmt.h"
+#include "driver/gpio.h"
 #include "driver/uart.h"
-
-#if ESP_IDF_VERSION_MAJOR > 4
-  #include "esp_private/periph_ctrl.h"
-#else
-  #include "driver/periph_ctrl.h"
-#endif
-
-// Note; current code use UART0 can cause device to reset while monitoring
-#define USE_UART  0
-#define UART_ID  UART_NUM_0
+#include "esp_private/periph_ctrl.h"
 
 #ifdef NEOPIXEL_PIN
 #include "led_strip.h"
-static led_strip_t* strip;
+static led_strip_handle_t led_strip;
 #endif
 
 #if CFG_TUH_ENABLED && CFG_TUH_MAX3421
@@ -55,7 +45,7 @@ static led_strip_t* strip;
 static void max3421_init(void);
 #endif
 
-static void configure_pins(usb_hal_context_t* usb);
+static bool usb_init(void);
 
 //--------------------------------------------------------------------+
 // Implementation
@@ -63,19 +53,6 @@ static void configure_pins(usb_hal_context_t* usb);
 
 // Initialize on-board peripherals : led, button, uart and USB
 void board_init(void) {
-#if USE_UART
-  // uart init
-  uart_config_t uart_config = {
-      .baud_rate = 115200,
-      .data_bits = UART_DATA_8_BITS,
-      .parity = UART_PARITY_DISABLE,
-      .stop_bits = UART_STOP_BITS_1,
-      .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
-  };
-  uart_driver_install(UART_ID, 1024, 0, 0, NULL, 0);
-  uart_param_config(UART_ID, &uart_config);
-#endif
-
 #ifdef NEOPIXEL_PIN
   #ifdef NEOPIXEL_POWER_PIN
   gpio_reset_pin(NEOPIXEL_POWER_PIN);
@@ -84,15 +61,22 @@ void board_init(void) {
   #endif
 
   // WS2812 Neopixel driver with RMT peripheral
-  rmt_config_t config = RMT_DEFAULT_CONFIG_TX(NEOPIXEL_PIN, RMT_CHANNEL_0);
-  config.clk_div = 2; // set counter clock to 40MHz
+  led_strip_rmt_config_t rmt_config = {
+      .clk_src = RMT_CLK_SRC_DEFAULT, // different clock source can lead to different power consumption
+      .resolution_hz = 10 * 1000 * 1000,  // RMT counter clock frequency, default = 10 Mhz
+      .flags.with_dma = false,        // DMA feature is available on ESP target like ESP32-S3
+  };
 
-  rmt_config(&config);
-  rmt_driver_install(config.channel, 0, 0);
+  led_strip_config_t strip_config = {
+      .strip_gpio_num = NEOPIXEL_PIN,           // The GPIO that connected to the LED strip's data line
+      .max_leds = 1,                            // The number of LEDs in the strip,
+      .led_pixel_format = LED_PIXEL_FORMAT_GRB, // Pixel format of your LED strip
+      .led_model = LED_MODEL_WS2812,            // LED strip model
+      .flags.invert_out = false,                // whether to invert the output signal
+  };
 
-  led_strip_config_t strip_config = LED_STRIP_DEFAULT_CONFIG(1, (led_strip_dev_t) config.channel);
-  strip = led_strip_new_rmt_ws2812(&strip_config);
-  strip->clear(strip, 100); // off led
+  ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+  led_strip_clear(led_strip); // off
 #endif
 
   // Button
@@ -100,20 +84,117 @@ void board_init(void) {
   gpio_set_direction(BUTTON_PIN, GPIO_MODE_INPUT);
   gpio_set_pull_mode(BUTTON_PIN, BUTTON_STATE_ACTIVE ? GPIO_PULLDOWN_ONLY : GPIO_PULLUP_ONLY);
 
-  // USB Controller Hal init
-  periph_module_reset(PERIPH_USB_MODULE);
-  periph_module_enable(PERIPH_USB_MODULE);
+#if TU_CHECK_MCU(OPT_MCU_ESP32S2, OPT_MCU_ESP32S3, OPT_MCU_ESP32P4)
+  usb_init();
+#endif
 
-  usb_hal_context_t hal = {
-      .use_external_phy = false // use built-in PHY
-  };
-  usb_hal_init(&hal);
-  configure_pins(&hal);
+#ifdef HIL_DEVICE_HOST_MUX_PIN
+  gpio_reset_pin(HIL_DEVICE_HOST_MUX_PIN);
+  gpio_set_direction(HIL_DEVICE_HOST_MUX_PIN, GPIO_MODE_OUTPUT);
+  gpio_set_level(HIL_DEVICE_HOST_MUX_PIN, CFG_TUD_ENABLED ? HIL_DEVICE_STATE : (1-HIL_DEVICE_STATE));
+#endif
 
 #if CFG_TUH_ENABLED && CFG_TUH_MAX3421
   max3421_init();
 #endif
 }
+
+#if TU_CHECK_MCU(OPT_MCU_ESP32S2, OPT_MCU_ESP32S3)
+
+#endif
+
+//--------------------------------------------------------------------+
+// Board porting API
+//--------------------------------------------------------------------+
+
+size_t board_get_unique_id(uint8_t id[], size_t max_len) {
+  // use factory default MAC as serial ID
+  esp_efuse_mac_get_default(id);
+  return 6;
+}
+
+void board_led_write(bool state) {
+#ifdef NEOPIXEL_PIN
+  led_strip_set_pixel(led_strip, 0, state ? 0x08 : 0x00, 0x00, 0x00);
+  led_strip_refresh(led_strip);
+#endif
+}
+
+// Get the current state of button
+// a '1' means active (pressed), a '0' means inactive.
+uint32_t board_button_read(void) {
+  return gpio_get_level(BUTTON_PIN) == BUTTON_STATE_ACTIVE;
+}
+
+// Get characters from UART
+int board_uart_read(uint8_t* buf, int len) {
+  for (int i=0; i<len; i++) {
+    int c = getchar();
+    if (c == EOF) {
+      return i;
+    }
+    buf[i] = (uint8_t) c;
+  }
+  return len;
+}
+
+// Send characters to UART
+int board_uart_write(void const* buf, int len) {
+  for (int i = 0; i < len; i++) {
+    putchar(((char*) buf)[i]);
+  }
+  return len;
+}
+
+int board_getchar(void) {
+  return getchar();
+}
+
+//--------------------------------------------------------------------
+// PHY Init
+//--------------------------------------------------------------------
+
+#if TU_CHECK_MCU(OPT_MCU_ESP32S2, OPT_MCU_ESP32S3, OPT_MCU_ESP32P4)
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+
+#include "esp_private/usb_phy.h"
+#include "soc/usb_pins.h"
+
+static usb_phy_handle_t phy_hdl;
+
+bool usb_init(void) {
+  // Configure USB PHY
+  usb_phy_config_t phy_conf = {
+    .controller = USB_PHY_CTRL_OTG,
+    .target = USB_PHY_TARGET_INT,
+
+    // maybe we can use USB_OTG_MODE_DEFAULT and switch using dwc2 driver
+#if CFG_TUD_ENABLED
+    .otg_mode = USB_OTG_MODE_DEVICE,
+    .otg_speed = BOARD_TUD_RHPORT ? USB_PHY_SPEED_HIGH : USB_PHY_SPEED_FULL,
+#elif CFG_TUH_ENABLED
+    .otg_mode = USB_OTG_MODE_HOST,
+    .otg_speed= BOARD_TUH_RHPORT ? USB_PHY_SPEED_HIGH : USB_PHY_SPEED_FULL,
+#endif
+  };
+
+  // OTG IOs config
+  // const usb_phy_otg_io_conf_t otg_io_conf = USB_PHY_SELF_POWERED_DEVICE(config->vbus_monitor_io);
+  // if (config->self_powered) {
+  //   phy_conf.otg_io_conf = &otg_io_conf;
+  // }
+  // ESP_RETURN_ON_ERROR(usb_new_phy(&phy_conf, &phy_hdl), TAG, "Install USB PHY failed");
+
+  usb_new_phy(&phy_conf, &phy_hdl);
+
+  return true;
+}
+
+#else
+
+#include "esp_private/usb_phy.h"
+#include "hal/usb_hal.h"
+#include "soc/usb_periph.h"
 
 static void configure_pins(usb_hal_context_t* usb) {
   /* usb_periph_iopins currently configures USB_OTG as USB Device.
@@ -126,12 +207,7 @@ static void configure_pins(usb_hal_context_t* usb) {
         esp_rom_gpio_connect_out_signal(iopin->pin, iopin->func, false, false);
       } else {
         esp_rom_gpio_connect_in_signal(iopin->pin, iopin->func, false);
-#if ESP_IDF_VERSION_MAJOR > 4
-        if ((iopin->pin != GPIO_MATRIX_CONST_ZERO_INPUT) && (iopin->pin != GPIO_MATRIX_CONST_ONE_INPUT))
-#else
-        if ((iopin->pin != GPIO_FUNC_IN_LOW) && (iopin->pin != GPIO_FUNC_IN_HIGH))
-#endif
-        {
+        if ((iopin->pin != GPIO_MATRIX_CONST_ZERO_INPUT) && (iopin->pin != GPIO_MATRIX_CONST_ONE_INPUT)) {
           gpio_ll_input_enable(&GPIO, iopin->pin);
         }
       }
@@ -145,43 +221,23 @@ static void configure_pins(usb_hal_context_t* usb) {
   }
 }
 
-//--------------------------------------------------------------------+
-// Board porting API
-//--------------------------------------------------------------------+
+bool usb_init(void) {
+  // USB Controller Hal init
+  periph_module_reset(PERIPH_USB_MODULE);
+  periph_module_enable(PERIPH_USB_MODULE);
 
-void board_led_write(bool state) {
-#ifdef NEOPIXEL_PIN
-  strip->set_pixel(strip, 0, (state ? 0x88 : 0x00), 0x00, 0x00);
-  strip->refresh(strip, 100);
+  usb_hal_context_t hal = {
+    .use_external_phy = false // use built-in PHY
+  };
+
+  usb_hal_init(&hal);
+  configure_pins(&hal);
+
+  return true;
+}
+
 #endif
-}
-
-// Get the current state of button
-// a '1' means active (pressed), a '0' means inactive.
-uint32_t board_button_read(void) {
-  return gpio_get_level(BUTTON_PIN) == BUTTON_STATE_ACTIVE;
-}
-
-// Get characters from UART
-int board_uart_read(uint8_t* buf, int len) {
-#if USE_UART
-  return uart_read_bytes(UART_ID, buf, len, 0);
-#else
-  return -1;
 #endif
-}
-
-// Send characters to UART
-int board_uart_write(void const* buf, int len) {
-  (void) buf;
-  (void) len;
-  return 0;
-}
-
-int board_getchar(void) {
-  uint8_t c = 0;
-  return board_uart_read(&c, 1) > 0 ? (int) c : (-1);
-}
 
 //--------------------------------------------------------------------+
 // API: SPI transfer with MAX3421E, must be implemented by application
@@ -193,15 +249,12 @@ SemaphoreHandle_t max3421_intr_sem;
 
 static void IRAM_ATTR max3421_isr_handler(void* arg) {
   (void) arg; // arg is gpio num
-  gpio_set_level(13, 1);
 
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
   xSemaphoreGiveFromISR(max3421_intr_sem, &xHigherPriorityTaskWoken);
   if (xHigherPriorityTaskWoken) {
     portYIELD_FROM_ISR();
   }
-
-  gpio_set_level(13, 0);
 }
 
 static void max3421_intr_task(void* param) {
@@ -235,15 +288,11 @@ static void max3421_init(void) {
 
   spi_device_interface_config_t max3421_cfg = {
       .mode = 0,
-      .clock_speed_hz = 26000000,
+      .clock_speed_hz = 20000000, // S2/S3 can work with 26 Mhz, but esp32 seems only work up to 20 Mhz
       .spics_io_num = -1, // manual control CS
       .queue_size = 1
   };
   ESP_ERROR_CHECK(spi_bus_add_device(MAX3421_SPI_HOST, &max3421_cfg, &max3421_spi));
-
-  // debug
-  gpio_set_direction(13, GPIO_MODE_OUTPUT);
-  gpio_set_level(13, 0);
 
   // Interrupt pin
   max3421_intr_sem = xSemaphoreCreateBinary();

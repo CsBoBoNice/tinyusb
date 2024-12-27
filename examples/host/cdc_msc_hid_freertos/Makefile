@@ -1,7 +1,7 @@
 include ../../build_system/make/make.mk
 
 FREERTOS_SRC = lib/FreeRTOS-Kernel
-FREERTOS_PORTABLE_PATH= $(FREERTOS_SRC)/portable/$(if $(USE_IAR),IAR,GCC)
+FREERTOS_PORTABLE_PATH= $(FREERTOS_SRC)/portable/$(if $(findstring iar,$(TOOLCHAIN)),IAR,GCC)
 
 INC += \
 	src \
@@ -13,7 +13,6 @@ INC += \
 # Example source
 EXAMPLE_SOURCE = \
   src/cdc_app.c \
-  src/freertos_hook.c \
   src/hid_app.c \
   src/main.c \
   src/msc_app.c \
